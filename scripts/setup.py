@@ -116,6 +116,116 @@ def create_stop_hook_runner(cwd: Path, cwd_str: str) -> Path:
     return runner_path
 
 
+# 핸드오버 관련 hook 감지용 키워드
+_HANDOVER_KEYWORDS = ["CURRENT_STATE.md", "stop_hook_runner.py", "handover_doc"]
+
+
+def find_handover_hooks(settings: dict) -> list[tuple[str, dict]]:
+    """settings 에서 핸드오버 관련 hook entry를 찾아 (event, entry) 리스트로 반환."""
+    found = []
+    hooks_section = settings.get("hooks", {})
+    if isinstance(hooks_section, dict):
+        for event, hook_list in hooks_section.items():
+            if not isinstance(hook_list, list):
+                continue
+            for item in hook_list:
+                if not isinstance(item, dict):
+                    continue
+                for h in item.get("hooks", []):
+                    cmd = h.get("command", "")
+                    if any(kw in cmd for kw in _HANDOVER_KEYWORDS):
+                        found.append((event, item))
+                        break
+    return found
+
+
+def remove_handover_hooks(settings: dict) -> int:
+    """settings 에서 핸드오버 관련 hook entry를 제거. 제거된 수 반환."""
+    removed = 0
+    hooks_section = settings.get("hooks", {})
+    if not isinstance(hooks_section, dict):
+        return 0
+    for event in list(hooks_section.keys()):
+        hook_list = hooks_section[event]
+        if not isinstance(hook_list, list):
+            continue
+        kept = []
+        for item in hook_list:
+            if not isinstance(item, dict):
+                kept.append(item)
+                continue
+            has_handover = any(
+                any(kw in h.get("command", "") for kw in _HANDOVER_KEYWORDS)
+                for h in item.get("hooks", [])
+            )
+            if has_handover:
+                removed += 1
+            else:
+                kept.append(item)
+        hooks_section[event] = kept
+    return removed
+
+
+def run_migrate(cwd: Path, cwd_str: str, agent_id: str, adapter: str | None) -> bool:
+    """기존 핸드오버 hook 탐지 → diff 출력 → 사용자 확인 → 제거.
+
+    Returns:
+        True  — 마이그레이션 완료 (또는 기존 hook 없음), 이후 일반 setup 진행
+        False — 사용자가 취소, setup 중단
+    """
+    dot_claude = cwd / ".claude"
+    candidates = [
+        (dot_claude / "settings.json", "settings.json"),
+        (dot_claude / "settings.local.json", "settings.local.json"),
+    ]
+
+    found_in: list[tuple[Path, str, dict, list[tuple[str, dict]]]] = []
+    for path, name in candidates:
+        s = load_settings(path)
+        hits = find_handover_hooks(s)
+        if hits:
+            found_in.append((path, name, s, hits))
+
+    if not found_in:
+        print("[handover/migrate] 기존 핸드오버 hook 미감지 — 일반 setup으로 진행.\n")
+        return True
+
+    print("[handover/migrate] 기존 핸드오버 관련 hook 발견:\n")
+    for path, name, _s, hits in found_in:
+        for event, entry in hits:
+            for h in entry.get("hooks", []):
+                cmd = h.get("command", "")
+                if any(kw in cmd for kw in _HANDOVER_KEYWORDS):
+                    preview = cmd[:120] + ("..." if len(cmd) > 120 else "")
+                    print(f"  [{name}] {event}:")
+                    print(f"    OLD: {preview}")
+
+    new_ss = build_session_start_hook(cwd_str)
+    new_stop = build_stop_hook(cwd_str)
+    new_ss_cmd = new_ss["hooks"][0]["command"]
+    new_stop_cmd = new_stop["hooks"][0]["command"]
+    print(f"\n  NEW SessionStart: {new_ss_cmd[:120]}...")
+    print(f"  NEW Stop:         {new_stop_cmd[:80]}...")
+
+    print()
+    try:
+        answer = input("기존 hook을 제거하고 새 hook으로 교체하시겠습니까? (y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+
+    if answer != "y":
+        print("[handover/migrate] 취소됨. 변경 없음.")
+        return False
+
+    for path, name, s, _hits in found_in:
+        n = remove_handover_hooks(s)
+        save_settings(path, s)
+        print(f"  ✓ [{name}] {n}개 hook 제거 완료")
+
+    print()
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="핸드오버 시스템 초기화 — 에이전트 프로젝트에 SessionStart/Stop hook과 handover_doc/ 구성"
@@ -124,7 +234,7 @@ def main() -> int:
     parser.add_argument("--cwd", required=True, help="프로젝트 절대경로")
     parser.add_argument("--adapter", default=None, help="어댑터 이름 (예: triad, triad-minimal)")
     parser.add_argument("--update", action="store_true", help="hook만 재등록 (CURRENT_STATE.md 보존)")
-    parser.add_argument("--migrate", action="store_true", help="기존 수동 핸드오버 시스템 교체 확인")
+    parser.add_argument("--migrate", action="store_true", help="기존 수동 핸드오버 hook 탐지 → diff 출력 → 교체 확인")
     args = parser.parse_args()
 
     cwd = Path(args.cwd).resolve()
@@ -133,6 +243,14 @@ def main() -> int:
     results: list[tuple[str, str]] = []
 
     print(f"\n[handover/setup] agent_id={agent_id}  cwd={cwd_str}\n")
+
+    # ------------------------------------------------------------------
+    # --migrate: 기존 hook 탐지 및 교체 확인
+    # ------------------------------------------------------------------
+    if args.migrate:
+        ok = run_migrate(cwd, cwd_str, agent_id, args.adapter)
+        if not ok:
+            return 0
 
     # ------------------------------------------------------------------
     # Step 1: Create handover_doc/

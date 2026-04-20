@@ -1,0 +1,24 @@
+{
+  "name": "triad",
+  "description": "TEMS + QMD + TWK 풀스택 Triad 에이전트용",
+  "shutdown_steps": [
+    {
+      "step": 5,
+      "label": "QMD recap 저장",
+      "instruction": "이번 세션 핵심 내용을 qmd_drive/recaps/YYYY-MM-DD_sN.md 로 저장 (TCL #116)"
+    },
+    {
+      "step": 6,
+      "label": "TWK L2 추출",
+      "cmd": "python ~/.claude/skills/TWK/scripts/extract_session_raw.py --config ./wiki.config.json",
+      "instruction": "출력: docs/session_archive/YYYYMMDD_sN_raw.md. 새 결정/패턴 있으면 L3 Curation도 수행"
+    }
+  ],
+  "boot_steps": [
+    {
+      "step": 3,
+      "label": "TEMS 규칙 로드",
+      "instruction": "preflight_hook.py가 UserPromptSubmit마다 자동 처리 — 별도 작업 불필요"
+    }
+  ]
+}

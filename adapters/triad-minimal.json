@@ -1,0 +1,12 @@
+{
+  "name": "triad-minimal",
+  "description": "QMD만, TWK 없는 경량 Triad 에이전트용",
+  "shutdown_steps": [
+    {
+      "step": 5,
+      "label": "QMD recap 저장",
+      "instruction": "이번 세션 핵심 내용을 qmd_drive/recaps/YYYY-MM-DD_sN.md 로 저장 (TCL #116)"
+    }
+  ],
+  "boot_steps": []
+}
